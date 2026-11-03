@@ -1,0 +1,315 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <limits.h>
+
+#define MAX_STOPS 50
+#define NAME_LEN  30
+#define INF       INT_MAX
+
+/* ---------- Graph: adjacency list ---------- */
+typedef struct Edge {
+    int to;
+    int weight;
+    struct Edge *next;
+} Edge;
+
+typedef struct {
+    char names[MAX_STOPS][NAME_LEN];
+    Edge *adj[MAX_STOPS];
+    int n;
+} Graph;
+
+/* ---------- Queue (for BFS) ---------- */
+typedef struct {
+    int data[MAX_STOPS];
+    int front, rear;
+} Queue;
+
+static void qInit(Queue *q)          { q->front = q->rear = 0; }
+static int  qEmpty(const Queue *q)   { return q->front == q->rear; }
+static void qPush(Queue *q, int v)   { q->data[q->rear++] = v; }
+static int  qPop(Queue *q)           { return q->data[q->front++]; }
+
+/* ---------- Priority queue (min-heap) for Dijkstra ---------- */
+#define HEAP_CAP (MAX_STOPS * MAX_STOPS * 2)
+
+typedef struct { int dist, v; } HeapNode;
+typedef struct { HeapNode a[HEAP_CAP]; int size; } MinHeap;
+
+static void hSwap(HeapNode *x, HeapNode *y) { HeapNode t = *x; *x = *y; *y = t; }
+
+static void hPush(MinHeap *h, int dist, int v) {
+    int i = h->size++;
+    h->a[i].dist = dist; h->a[i].v = v;
+    while (i > 0 && h->a[(i - 1) / 2].dist > h->a[i].dist) {
+        hSwap(&h->a[i], &h->a[(i - 1) / 2]);
+        i = (i - 1) / 2;
+    }
+}
+
+static HeapNode hPop(MinHeap *h) {
+    HeapNode top = h->a[0];
+    h->a[0] = h->a[--h->size];
+    int i = 0;
+    for (;;) {
+        int l = 2 * i + 1, r = l + 1, m = i;
+        if (l < h->size && h->a[l].dist < h->a[m].dist) m = l;
+        if (r < h->size && h->a[r].dist < h->a[m].dist) m = r;
+        if (m == i) break;
+        hSwap(&h->a[i], &h->a[m]);
+        i = m;
+    }
+    return top;
+}
+
+/* ---------- Helpers ---------- */
+static void readLine(const char *prompt, char *buf, int size) {
+    printf("%s", prompt);
+    if (!fgets(buf, size, stdin)) { buf[0] = '\0'; return; }
+    buf[strcspn(buf, "\r\n")] = '\0';
+}
+
+static int equalsIgnoreCase(const char *a, const char *b) {
+    while (*a && *b) {
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return 0;
+        a++; b++;
+    }
+    return *a == *b;
+}
+
+/* Find stop by name (case-insensitive) or by its number (1..n). -1 if invalid. */
+static int findStop(const Graph *g, const char *s) {
+    char *end;
+    long num = strtol(s, &end, 10);
+    if (*s && *end == '\0' && num >= 1 && num <= g->n) return (int)num - 1;
+    for (int i = 0; i < g->n; i++)
+        if (equalsIgnoreCase(g->names[i], s)) return i;
+    return -1;
+}
+
+static int addStop(Graph *g, const char *name) {
+    if (g->n >= MAX_STOPS) { printf("Network is full.\n"); return -1; }
+    if (name[0] == '\0')   { printf("Name cannot be empty.\n"); return -1; }
+    if (findStop(g, name) != -1) { printf("Stop already exists.\n"); return -1; }
+    strncpy(g->names[g->n], name, NAME_LEN - 1);
+    g->names[g->n][NAME_LEN - 1] = '\0';
+    g->adj[g->n] = NULL;
+    return g->n++;
+}
+
+static void addDirected(Graph *g, int u, int v, int w) {
+    Edge *e = malloc(sizeof(Edge));
+    if (!e) { printf("Out of memory.\n"); exit(1); }
+    e->to = v; e->weight = w; e->next = g->adj[u];
+    g->adj[u] = e;
+}
+
+static int hasEdge(const Graph *g, int u, int v) {
+    for (Edge *e = g->adj[u]; e; e = e->next)
+        if (e->to == v) return 1;
+    return 0;
+}
+
+/* Undirected connection */
+static int addRoad(Graph *g, int u, int v, int w) {
+    if (u == v)          { printf("A stop cannot connect to itself.\n"); return 0; }
+    if (w <= 0)          { printf("Distance must be positive.\n"); return 0; }
+    if (hasEdge(g, u, v)) { printf("Connection already exists.\n"); return 0; }
+    addDirected(g, u, v, w);
+    addDirected(g, v, u, w);
+    return 1;
+}
+
+static void freeGraph(Graph *g) {
+    for (int i = 0; i < g->n; i++) {
+        Edge *e = g->adj[i];
+        while (e) { Edge *t = e; e = e->next; free(t); }
+        g->adj[i] = NULL;
+    }
+}
+
+/* ---------- Sample network ---------- */
+static void loadSample(Graph *g) {
+    const char *stops[] = {"Central", "Market", "College", "Hospital", "Park", "Terminal"};
+    for (int i = 0; i < 6; i++) addStop(g, stops[i]);
+    addRoad(g, 0, 1, 4);  /* Central  - Market   */
+    addRoad(g, 0, 2, 3);  /* Central  - College  */
+    addRoad(g, 1, 3, 5);  /* Market   - Hospital */
+    addRoad(g, 2, 3, 4);  /* College  - Hospital */
+    addRoad(g, 2, 4, 2);  /* College  - Park     */
+    addRoad(g, 3, 5, 3);  /* Hospital - Terminal */
+    addRoad(g, 4, 5, 2);  /* Park     - Terminal */
+}
+
+/* ---------- Display ---------- */
+static void listStops(const Graph *g) {
+    printf("\n--- Bus Stops ---\n");
+    for (int i = 0; i < g->n; i++) printf("%2d. %s\n", i + 1, g->names[i]);
+}
+
+static void showNetwork(const Graph *g) {
+    printf("\n--- Network (Adjacency List) ---\n");
+    for (int i = 0; i < g->n; i++) {
+        printf("%-12s -> ", g->names[i]);
+        if (!g->adj[i]) printf("(no connections)");
+        for (Edge *e = g->adj[i]; e; e = e->next)
+            printf("%s(%d km)  ", g->names[e->to], e->weight);
+        printf("\n");
+    }
+}
+
+/* Rebuild path using predecessor array and print it */
+static void printRoute(const Graph *g, const int prev[], int src, int dst, int weighted, int dist) {
+    int path[MAX_STOPS], len = 0;
+    for (int v = dst; v != -1; v = prev[v]) path[len++] = v;
+
+    printf("\nRoute: ");
+    for (int i = len - 1; i >= 0; i--) {
+        printf("%s", g->names[path[i]]);
+        if (i > 0) printf(" -> ");
+    }
+    printf("\nStops travelled : %d\n", len - 1);
+    if (weighted) printf("Total distance  : %d km\n", dist);
+    (void)src;
+}
+
+/* ---------- BFS: minimum number of stops ---------- */
+static void bfsRoute(const Graph *g, int src, int dst) {
+    int visited[MAX_STOPS] = {0}, prev[MAX_STOPS], dist[MAX_STOPS];
+    for (int i = 0; i < g->n; i++) { prev[i] = -1; dist[i] = 0; }
+
+    Queue q; qInit(&q);
+    visited[src] = 1; qPush(&q, src);
+
+    while (!qEmpty(&q)) {
+        int u = qPop(&q);
+        if (u == dst) break;
+        for (Edge *e = g->adj[u]; e; e = e->next) {
+            if (!visited[e->to]) {
+                visited[e->to] = 1;
+                prev[e->to] = u;
+                dist[e->to] = dist[u] + 1;
+                qPush(&q, e->to);
+            }
+        }
+    }
+
+    if (!visited[dst]) {
+        printf("\nNo route available between %s and %s.\n", g->names[src], g->names[dst]);
+        return;
+    }
+    printf("\n[BFS - Minimum number of stops]");
+    printRoute(g, prev, src, dst, 0, 0);
+}
+
+/* ---------- Dijkstra: minimum distance ---------- */
+static void dijkstraRoute(const Graph *g, int src, int dst) {
+    int dist[MAX_STOPS], prev[MAX_STOPS], done[MAX_STOPS] = {0};
+    for (int i = 0; i < g->n; i++) { dist[i] = INF; prev[i] = -1; }
+
+    static MinHeap h;           /* static: large, keep off the stack */
+    h.size = 0;
+    dist[src] = 0;
+    hPush(&h, 0, src);
+
+    while (h.size > 0) {
+        HeapNode cur = hPop(&h);
+        int u = cur.v;
+        if (done[u]) continue;  /* stale heap entry */
+        done[u] = 1;
+        if (u == dst) break;
+        for (Edge *e = g->adj[u]; e; e = e->next) {
+            if (!done[e->to] && dist[u] + e->weight < dist[e->to]) {
+                dist[e->to] = dist[u] + e->weight;
+                prev[e->to] = u;
+                hPush(&h, dist[e->to], e->to);
+            }
+        }
+    }
+
+    if (dist[dst] == INF) {
+        printf("\nNo route available between %s and %s.\n", g->names[src], g->names[dst]);
+        return;
+    }
+    printf("\n[Dijkstra - Minimum distance]");
+    printRoute(g, prev, src, dst, 1, dist[dst]);
+}
+
+/* ---------- Input flow ---------- */
+static int askStop(const Graph *g, const char *prompt) {
+    char buf[NAME_LEN + 10];
+    readLine(prompt, buf, sizeof buf);
+    int id = findStop(g, buf);
+    if (id == -1) printf("Invalid stop. Enter a valid name or number.\n");
+    return id;
+}
+
+static void findRoute(const Graph *g, int useDijkstra) {
+    if (g->n < 2) { printf("Need at least two stops.\n"); return; }
+    listStops(g);
+    int s = askStop(g, "\nEnter source stop (name/number): ");
+    if (s == -1) return;
+    int d = askStop(g, "Enter destination stop (name/number): ");
+    if (d == -1) return;
+    if (s == d) { printf("Source and destination are the same.\n"); return; }
+    if (useDijkstra) dijkstraRoute(g, s, d);
+    else             bfsRoute(g, s, d);
+}
+
+static void menu(void) {
+    printf("\n=========================================\n");
+    printf("   BUS ROUTE AND SHORTEST PATH FINDER\n");
+    printf("=========================================\n");
+    printf(" 1. Show all bus stops\n");
+    printf(" 2. Show network connections\n");
+    printf(" 3. Add a bus stop\n");
+    printf(" 4. Add a connection (road)\n");
+    printf(" 5. Find route with fewest stops (BFS)\n");
+    printf(" 6. Find route with shortest distance (Dijkstra)\n");
+    printf(" 0. Exit\n");
+}
+
+int main(void) {
+    Graph g = { .n = 0 };
+    loadSample(&g);
+
+    char buf[64];
+    int choice;
+    do {
+        menu();
+        readLine("Enter choice: ", buf, sizeof buf);
+        choice = isdigit((unsigned char)buf[0]) && buf[1] == '\0' ? buf[0] - '0' : -1;
+
+        switch (choice) {
+        case 1: listStops(&g); break;
+        case 2: showNetwork(&g); break;
+        case 3: {
+            readLine("Enter new stop name: ", buf, NAME_LEN);
+            if (addStop(&g, buf) != -1) printf("Stop added.\n");
+            break;
+        }
+        case 4: {
+            if (g.n < 2) { printf("Need at least two stops.\n"); break; }
+            listStops(&g);
+            int u = askStop(&g, "\nFirst stop (name/number): ");
+            if (u == -1) break;
+            int v = askStop(&g, "Second stop (name/number): ");
+            if (v == -1) break;
+            readLine("Distance in km: ", buf, sizeof buf);
+            char *end;
+            long w = strtol(buf, &end, 10);
+            if (*buf == '\0' || *end != '\0') { printf("Invalid distance.\n"); break; }
+            if (addRoad(&g, u, v, (int)w)) printf("Connection added.\n");
+            break;
+        }
+        case 5: findRoute(&g, 0); break;
+        case 6: findRoute(&g, 1); break;
+        case 0: printf("Goodbye!\n"); break;
+        default: printf("Invalid choice. Try again.\n");
+        }
+    } while (choice != 0);
+
+    freeGraph(&g);
+    return 0
